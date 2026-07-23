@@ -16,13 +16,23 @@
   .badge { width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center;
            font-size:16px; background:#ddd; color:#888; flex-shrink:0; }
   .badge.done { background:#ff9e2c; color:#fff; }
-  .spot-name { font-size:14px; }
+  .spot-name { font-size:14px; flex:1; }
+  .map-link { font-size:12px; color:#1a73e8; text-decoration:none; white-space:nowrap; padding:4px 8px;
+              border:1px solid #1a73e8; border-radius:12px; flex-shrink:0; }
+  .map-link:active { background:#e8f0fe; }
   .btn { display:inline-block; margin-top:12px; padding:14px 20px; border-radius:24px; background:#06c755;
          color:#fff; text-align:center; font-weight:bold; border:none; width:100%; font-size:16px; }
+  .btn.secondary { background:#fff; color:#06c755; border:2px solid #06c755; margin-top:8px; }
   .btn:disabled { background:#ccc; }
   .error { color:#c0392b; }
   .loading { color:#888; }
   .note { font-size:12px; color:#999; margin-top:16px; line-height:1.5; }
+  .ranking-panel { margin-top:16px; padding-top:16px; border-top:1px solid #eee; display:none; }
+  .ranking-title { font-size:15px; font-weight:bold; margin-bottom:8px; }
+  .ranking-row { display:flex; align-items:center; gap:10px; padding:8px 4px; font-size:14px; }
+  .ranking-row .rank { width:28px; font-weight:bold; color:#888; }
+  .ranking-row.me { background:#fff3e2; border-radius:8px; }
+  .my-rank-summary { font-size:13px; color:#555; margin-top:10px; padding-top:10px; border-top:1px dashed #ddd; }
 </style>
 </head>
 <body>
@@ -31,6 +41,12 @@
     <div id="message" class="status loading">読み込み中...</div>
     <div id="progress" class="progress"></div>
     <button id="checkBtn" class="btn" style="display:none;">今いる場所でスタンプをチェック</button>
+    <button id="rankingBtn" class="btn secondary" style="display:none;">ランキングを見る</button>
+    <div id="rankingPanel" class="ranking-panel">
+      <div class="ranking-title">🏆 スタンプ獲得数ランキング（上位10名）</div>
+      <div id="rankingList"></div>
+      <div id="myRankSummary" class="my-rank-summary"></div>
+    </div>
     <div class="note">スポットの近く（目安100m以内）でボタンを押してください。GPSの精度により反応しない場合は、電波の良い屋外で再度お試しください。</div>
   </div>
 
@@ -45,8 +61,13 @@ const GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbzYjUUKJ0K6jg2FjkX
 const messageEl = document.getElementById("message");
 const progressEl = document.getElementById("progress");
 const checkBtn = document.getElementById("checkBtn");
+const rankingBtn = document.getElementById("rankingBtn");
+const rankingPanel = document.getElementById("rankingPanel");
+const rankingList = document.getElementById("rankingList");
+const myRankSummary = document.getElementById("myRankSummary");
 
 let currentUserId = null;
+let currentDisplayName = null;
 
 async function main() {
   await liff.init({ liffId: LIFF_ID });
@@ -56,10 +77,13 @@ async function main() {
   }
   const profile = await liff.getProfile();
   currentUserId = profile.userId;
+  currentDisplayName = profile.displayName;
 
   await refreshProgress(currentUserId);
   checkBtn.style.display = "block";
   checkBtn.onclick = getStamp;
+  rankingBtn.style.display = "block";
+  rankingBtn.onclick = toggleRanking;
 }
 
 async function refreshProgress(userId) {
@@ -81,6 +105,26 @@ function renderProgress(data) {
     name.textContent = s.spotName;
     row.appendChild(badge);
     row.appendChild(name);
+
+    // Googleマップへのリンク（緯度経度がある場合のみ表示）
+    if (s.lat && s.lng) {
+      const mapLink = document.createElement("a");
+      mapLink.className = "map-link";
+      mapLink.textContent = "📍地図";
+      mapLink.href = "#";
+      mapLink.onclick = (ev) => {
+        ev.preventDefault();
+        const mapUrl = `https://www.google.com/maps?q=${s.lat},${s.lng}`;
+        // LIFF内なので外部ブラウザで開く
+        if (window.liff && liff.isInClient && liff.isInClient()) {
+          liff.openWindow({ url: mapUrl, external: true });
+        } else {
+          window.open(mapUrl, "_blank");
+        }
+      };
+      row.appendChild(mapLink);
+    }
+
     progressEl.appendChild(row);
   });
   messageEl.textContent = `${data.collectedCount} / ${data.totalCount} スポット達成`;
@@ -89,7 +133,7 @@ function renderProgress(data) {
 
 function getStamp() {
   checkBtn.disabled = true;
-  messageEl.textContent = "現在地を確認しています...";
+  messageEl.textContent = "GPSで現在地を確認しています…（電波状況により20〜30秒程度かかる場合があります）";
   messageEl.className = "status loading";
 
   navigator.geolocation.getCurrentPosition(async (pos) => {
@@ -98,7 +142,7 @@ function getStamp() {
       const res = await fetch(GAS_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "text/plain" }, // GAS側の制約回避のためtext/plainで送信
-        body: JSON.stringify({ userId: currentUserId, lat: latitude, lng: longitude })
+        body: JSON.stringify({ userId: currentUserId, lat: latitude, lng: longitude, displayName: currentDisplayName })
       });
       const data = await res.json();
 
@@ -132,6 +176,52 @@ function getStamp() {
 }
 
 main();
+
+// ---------- ランキング ----------
+
+let rankingVisible = false;
+
+async function toggleRanking() {
+  rankingVisible = !rankingVisible;
+  if (!rankingVisible) {
+    rankingPanel.style.display = "none";
+    rankingBtn.textContent = "ランキングを見る";
+    return;
+  }
+  rankingBtn.textContent = "ランキングを閉じる";
+  rankingPanel.style.display = "block";
+  rankingList.innerHTML = "読み込み中…";
+  myRankSummary.textContent = "";
+
+  try {
+    const res = await fetch(`${GAS_ENDPOINT}?action=ranking&userId=${currentUserId}`);
+    const data = await res.json();
+    renderRanking(data);
+  } catch (err) {
+    rankingList.innerHTML = "ランキングの取得に失敗しました。";
+  }
+}
+
+function renderRanking(data) {
+  rankingList.innerHTML = "";
+  if (!data.top10 || data.top10.length === 0) {
+    rankingList.textContent = "まだランキングデータがありません。";
+  } else {
+    data.top10.forEach(entry => {
+      const row = document.createElement("div");
+      row.className = "ranking-row";
+      row.innerHTML = `<div class="rank">${entry.rank}位</div><div>${entry.name}</div><div style="margin-left:auto;">${entry.count}個</div>`;
+      rankingList.appendChild(row);
+    });
+  }
+
+  if (data.myRank) {
+    myRankSummary.textContent = `あなたは現在 ${data.myRank}位 / 参加者${data.totalParticipants}人中（獲得数：${data.myCount}個）`;
+  } else {
+    myRankSummary.textContent = "まだスタンプを1つも獲得していません。スポットを回ってランキングに参加しましょう！";
+  }
+}
+
 </script>
 </body>
 </html>
